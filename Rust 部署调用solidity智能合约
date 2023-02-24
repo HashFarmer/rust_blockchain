@@ -1,0 +1,232 @@
+cargo new deploy-contract
+
+cd deploy-contract
+
+打开 Cargo.toml 文件。需要安装ethers.rs库等。
+[package]
+name = "deploy-contract"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ethers = "1.0.2"
+ethers-solc = "1.0.2"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0.89"
+serde = "1.0.149"
+
+项目结构目录
+├── Cargo.lock
+├── Cargo.toml
+├── target
+├── src
+    ├── Incrementer.sol
+    └── main.rs
+└── Incrementer_ABI.json
+
+
+#
+main.rs
+
+use ethers::prelude::*;
+use ethers::providers::{Http, Provider};
+use ethers_solc::Solc;
+use std::{path::Path, sync::Arc};
+
+type Client = SignerMiddleware<Provider<Http>, Wallet<k256::ecdsa::SigningKey>>;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider: Provider<Http> = Provider::<Http>::try_from("https://data-seed-prebsc-1-s1.binance.org:8545")?; // 替换你的RPC地址 http://127.0.0.1:8545
+                                                                                         // 配置私钥，去除“0x”前缀
+    let wallet: LocalWallet = "a58ac7ea54b74896c6a3129370dea99140c42b6908dff628f9062b9d40da4b7e"
+        .parse::<LocalWallet>()?;
+    let client = SignerMiddleware::new(provider.clone(), wallet.clone());
+
+    // 部署合约
+    let addr = compile_deploy_contract(&client).await?;
+    //读取合约中的number值
+    read_number(&client, &addr).await?;
+
+    // 调用合约增加number值方法
+    increment_number(&client, &addr).await?;
+    read_number(&client, &addr).await?;
+
+    // 重置合约中的number值
+    reset(&client, &addr).await?;
+    read_number(&client, &addr).await?;
+
+    Ok(())
+}
+
+async fn compile_deploy_contract(client: &Client) -> Result<H160, Box<dyn std::error::Error>> {
+    // Incrementer.sol source的变量作为托管所有需要编译的智能合约的目录路径，该目录为根目录
+    let source = Path::new(&env!("CARGO_MANIFEST_DIR")); //设置环境变量，Cargo.toml 文件所在的文件夹路径
+                                                         // let source = Path::new("/Users/smartstrategy-ios01/IT/Rust/rust-web3/deploy-contract");
+    println!("source：{}", source.display());
+
+    // 编译合约   需要先安装solc-select工具编译所有的智能合约：https://github.com/crytic/solc-select
+    let compiled = Solc::default()
+        .compile_source(source)
+        .expect("Could not compile contracts");
+    // println!("compiled：{:#?}",compiled);
+
+    // 获取合约的abi和Bytecode文件
+    let (abi, bytecode, _runtime_bytecode) = compiled
+        .find("Incrementer")
+        .expect("could not find contract")
+        .into_parts_or_default();
+    // let contract = compiled
+    //     .get(
+    //         "/Users/smartstrategy-ios01/IT/Rust/rust-web3/deploy-contract/src/Incrementer.sol",
+    //         "Incrementer",
+    //     )
+    //     .expect("could not find contract");
+
+    // println!("abi:{:#?}",abi);
+    // println!("bytecode:{:#?}",bytecode);
+    // println!("_runtime_bytecode:{:#?}",_runtime_bytecode);
+
+    // 创建将用于部署合约的工厂实例
+    let factory = ContractFactory::new(abi, bytecode, Arc::new(client.clone()));
+    // let factory = ContractFactory::new(
+    //     contract.abi.unwrap().clone(),
+    //     contract.bytecode().unwrap().clone(),
+    //     Arc::new(client.clone()),
+    // );
+
+    // let contract = factory
+    //     .deploy(U256::from(5))?
+    //     .confirmations(0usize)
+    //     .legacy()
+    //     .send()
+    //     .await?;
+
+    // 部署合约 初始构造参数100
+    let contract = factory.deploy(U256::from(100))?.legacy().send().await?;
+    let addr = contract.address(); //返回部署合约后地址
+
+    println!("Incrementer.sol has been deployed to {:?}", addr);
+
+    Ok(addr)
+}
+
+// 为Incrementer智能合约生成类型安全接口
+abigen!(
+    Incrementer,
+    "./Incrementer_ABI.json",
+    event_derives(serde::Deserialize, serde::Serialize)
+);
+
+async fn read_number(
+    client: &Client,
+    contract_addr: &H160,
+) -> Result<U256, Box<dyn std::error::Error>> {
+    // 创建合同实例
+    let contract = Incrementer::new(contract_addr.clone(), Arc::new(client.clone()));
+
+    // 调用合约中的number方法,查询值
+    let value = contract.number().call().await?;
+
+    println!("Incrementer's number is {}", value);
+
+    Ok(value)
+}
+
+async fn increment_number(
+    client: &Client,
+    contract_addr: &H160,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Incrementing number...");
+
+    // 创建合同实例
+    let contract = Incrementer::new(contract_addr.clone(), Arc::new(client.clone()));
+
+    // 调用合约increment方法，增加number值
+    let tx = contract.increment(U256::from(100)).legacy().send().await?.await?;
+    println!("Transaction Receipt: {}", serde_json::to_string(&tx)?);
+
+    Ok(())
+}
+
+async fn reset(client: &Client, contract_addr: &H160) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Resetting number...");
+
+    // 创建合同实例
+    let contract = Incrementer::new(contract_addr.clone(), Arc::new(client.clone()));
+
+    // 调用合约reset方法，重置number值
+    let tx = contract.reset().legacy().send().await?.await?;
+    println!("Transaction Receipt: {}", serde_json::to_string(&tx)?);
+
+    Ok(())
+}
+
+
+#Incrementer.sol
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+contract Incrementer {
+    uint256 public number;
+
+    constructor(uint256 _initialNumber) {
+        number = _initialNumber;
+    }
+
+    function increment(uint256 _value) public {
+        number = number + _value;
+    }
+
+    function reset() public {
+        number = 0;
+    }
+}
+
+
+#Incrementer_ABI.json
+
+[
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_value",
+        "type": "uint256"
+      }
+    ],
+    "name": "increment",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "number",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "reset",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]
+
+
+#
+
+cargo run
