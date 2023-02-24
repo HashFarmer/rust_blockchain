@@ -1,0 +1,104 @@
+
+cargo new ethers-transfer
+
+cd ethers-transfer
+
+
+
+
+
+[package]
+name = "ethers-transfer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ethers = "1.0.2"
+ethers-solc = "1.0.2"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0.89"
+serde = "1.0.149"
+
+
+
+
+
+use ethers::providers::{Provider, Http};
+use ethers::{utils, prelude::*};
+
+type Client = SignerMiddleware<Provider<Http>, Wallet<k256::ecdsa::SigningKey>>;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider: Provider<Http> = Provider::<Http>::try_from("http://127.0.0.1:8545")?;// 替换你的RPC地址 http://127.0.0.1:8545
+    // 配置使用私钥进行以下交易，去除“0x”前缀
+    let wallet: LocalWallet = "a58ac7ea54b74896c6a3129370dea99140c42b6908dff628f9062b9d40da4b7e"
+        .parse::<LocalWallet>()?
+        .with_chain_id(1281u64);  // 可以更换链ID
+        // .with_chain_id(Chain::Moonbase);  // 可以更换链ID
+    let client = SignerMiddleware::new(provider.clone(), wallet.clone());
+
+    let address_from = "0x9295b5ca66CC2d8Abfa9024F482038A2D5Ff7Eaf".parse::<Address>()?;
+    let address_to = "0x108e35b0089e8069dae7e9fdc3a0353ac62a999e".parse::<Address>()?;
+
+
+    let block_number = provider.get_block_number().await?;
+    println!("获取最新区块号: {}", block_number );
+
+    // let block = provider.get_block(81088u64).await?;
+    // println!("获取区块号交易信息: {}", serde_json::to_string(&block)?);
+
+    let gas_price = provider.get_gas_price().await?;
+    println!("获取当前gas_price: {} Wei => {} Gwei", gas_price ,utils::format_units(gas_price, "gwei").unwrap());
+
+    let none = provider.get_transaction_count(address_from,None).await?;
+    println!("获取当前地址的None值: {}", none );
+
+
+    send_transaction(&client, &address_from, &address_to).await?;
+    print_balances(&provider, &address_from, &address_to).await?;
+
+    Ok(())
+}
+
+// 查询钱包地址余额
+async fn print_balances(provider: &Provider<Http>, address_from: &Address, address_to: &Address) -> Result<(), Box<dyn std::error::Error>> {
+    let balance_from = provider.get_balance(address_from.clone(), None).await?;
+    let balance_to = provider.get_balance(address_to.clone(), None).await?;
+
+    println!("{} has {},eth:{}", address_from, balance_from, utils::format_units(balance_from, "ether").unwrap());
+    println!("{} has {},eth:{}", address_to, balance_to, utils::format_units(balance_to, 18).unwrap());
+    Ok(())
+}
+
+
+// 转账基础币
+async fn send_transaction(client: &Client, address_from: &Address, address_to: &Address) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "开始转移1个基础币： {} to {}.",
+        address_from, address_to
+    );
+    let gas = U256::from(21000);
+    let gas_price = client.get_gas_price().await?;
+
+    let tx = TransactionRequest::new()
+        .to(address_to.clone())
+        .value(U256::from(utils::parse_ether(1)?))
+        .from(address_from.clone())
+        .gas(gas)
+        .gas_price(gas_price);
+    println!("组装交易信息: {}", serde_json::to_string(&tx)?);
+
+    let tx_hash = client.send_transaction(tx, None).await?.await?;
+    println!("返回交易数据: {}", serde_json::to_string(&tx_hash)?);
+
+    Ok(())
+}
+
+
+
+
+
+cargo run
